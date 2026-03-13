@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ✨ Notion Light Mode Inspired ✨ */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 98%;
+    --card-foreground: 0 0% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 210 20% 96%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 210 20% 96%;
+    --muted-foreground: 220 8% 46%;
+    --accent: 210 20% 96%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 0 0% 9%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* ✨ VS Code Dark Mode Inspired ✨ */
+    --background: 0 0% 12%;       /* #1e1e1e */
+    --foreground: 0 0% 80%;       /* #cccccc */
+    --card: 0 0% 15%;         /* #252526 */
+    --card-foreground: 0 0% 90%;
+    --popover: 0 0% 15%;
+    --popover-foreground: 0 0% 80%;
+    --primary: 205 100% 40%;      /* #007acc */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 18%;        /* #2d2d2d */
+    --secondary-foreground: 0 0% 80%;
+    --muted: 0 0% 18%;
+    --muted-foreground: 0 0% 60%;
+    --accent: 0 0% 25%;           /* #3e3e42 (hover usually) */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 20%;           /* Subtle dark border */
+    --input: 0 0% 25%;            /* Inputs like search bar */
+    --ring: 205 100% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+/* React Flow Theming Overrides */
+.react-flow__node {
+  @apply rounded-md border border-border bg-card text-card-foreground shadow-sm;
+}
+.react-flow__handle {
+  @apply bg-primary w-2 h-2;
+}
+.dark .react-flow__controls-button {
+  @apply bg-card text-card-foreground border-border fill-card-foreground;
+}
+.dark .react-flow__panel {
+  @apply bg-card border-border;
+}
