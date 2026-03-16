@@ -3,18 +3,22 @@ import { useParams } from 'react-router-dom';
 import { ReactFlow, Controls, Background, Node, Edge, applyNodeChanges, applyEdgeChanges, NodeChange, EdgeChange, NodeMouseHandler } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { WorkflowTask, getTasks, saveTask } from '../lib/tasks';
-import { getProjectById, updateProjectChatHistory, updateProjectStage } from '../lib/projects';
+import { getProjectById, updateProjectChatHistory, updateProjectStage, updateProjectIsRunning } from '../lib/projects';
 import { AIEmployee, getEmployeeById, getEmployees } from '../lib/employees';
 import { callLLM, LLMMessage } from '../lib/llm';
 import TaskModal from '../components/TaskModal';
-import { Plus, LayoutGrid, Network, Loader2 } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Loader2, Play, Pause } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { invoke } from '@tauri-apps/api/core';
+import { readTextFile } from '@tauri-apps/plugin-fs';
+import { useTranslation } from '../lib/i18n';
 
 const initialNodes: Node[] = [];
 const initialEdges: Edge[] = [];
 
 export default function ProjectWorkspace() {
     const { id } = useParams();
+    const { t } = useTranslation();
     const projectId = parseInt(id || '0', 10);
 
     const [tasks, setTasks] = useState<WorkflowTask[]>([]);
@@ -25,6 +29,7 @@ export default function ProjectWorkspace() {
     const [manager, setManager] = useState<AIEmployee | null>(null);
     const [isChatLoading, setIsChatLoading] = useState(false);
     const [projectStage, setProjectStage] = useState<string>('research');
+    const [isRunning, setIsRunning] = useState(false);
 
     // Resizing logic
     const [chatWidth, setChatWidth] = useState(350);
@@ -77,6 +82,9 @@ export default function ProjectWorkspace() {
                 if (proj.stage) {
                     setProjectStage(proj.stage);
                 }
+                if (proj.is_running !== undefined) {
+                    setIsRunning(proj.is_running === 1);
+                }
             }
 
             const data = await getTasks(projectId);
@@ -114,6 +122,147 @@ export default function ProjectWorkspace() {
 
     useEffect(() => { loadTasks() }, [projectId]);
 
+    const handleToggleExecution = async () => {
+        const nextState = !isRunning;
+        setIsRunning(nextState);
+        await updateProjectIsRunning(projectId, nextState ? 1 : 0);
+    };
+
+    const parseAndSaveFiles = async (response: string, baseProjectPath: string) => {
+        const fileRegex = /<file\s+path="([^"]+)">([\s\S]*?)<\/file>/g;
+        let match;
+        while ((match = fileRegex.exec(response)) !== null) {
+            const relPath = match[1];
+            const content = match[2];
+            try {
+                // Ensure base path doesn't have trailing slash and relPath doesn't have leading slash, standard join formatting.
+                const cleanBase = baseProjectPath.replace(/[\\/]$/, '');
+                const cleanRel = relPath.replace(/^[\\/]/, '');
+                const absolutePath = `${cleanBase}/${cleanRel}`;
+                await invoke('save_file', { absolutePath, content });
+            } catch (e) {
+                console.error("Auto execute failed to parse/save file:", e);
+            }
+        }
+    };
+
+    useEffect(() => {
+        if (!isRunning || !projectId) return;
+
+        const executeStep = async () => {
+            try {
+                const currentTasks = await getTasks(projectId);
+                const proj = await getProjectById(projectId);
+                if (!proj) return;
+                
+                const allEmployees = await getEmployees();
+                
+                for (const t of currentTasks) {
+                    if (t.status === 'todo' && t.assignee_type !== 'human') {
+                        let isReady = true;
+                        if (t.parent_task_ids) {
+                            try {
+                                const parents = JSON.parse(t.parent_task_ids) as number[];
+                                for (const pid of parents) {
+                                    const parentTask = currentTasks.find(pt => pt.id === pid);
+                                    if (!parentTask || parentTask.status !== 'done') {
+                                        isReady = false;
+                                        break;
+                                    }
+                                }
+                            } catch(e) {}
+                        }
+
+                        if (isReady) {
+                            // Start processing this task
+                            await saveTask({ ...t, status: 'in-progress' });
+                            loadTasks(); // refresh UI immediately
+                            
+                            let apiUrl = '';
+                            let apiKey = '';
+                            let model = '';
+                            let sysPrompt = '';
+                            let isConfigValid = false;
+
+                            if (t.assignee_type === 'predefinedAI') {
+                                const emp = allEmployees.find(e => e.id === t.ai_id);
+                                if (emp) {
+                                    apiUrl = emp.api_url;
+                                    apiKey = emp.api_key;
+                                    model = emp.model;
+                                    sysPrompt = emp.system_prompt || '';
+                                    if (emp.skill_path) {
+                                        try {
+                                            const skillData = await readTextFile(emp.skill_path);
+                                            sysPrompt += `\n\n[Skill Knowledge Base]\n${skillData}`;
+                                        } catch(e) { console.error("Could not load skill file", e); }
+                                    }
+                                    isConfigValid = true;
+                                }
+                            } else if (t.assignee_type === 'customAI' && t.custom_api_config) {
+                                try {
+                                    const conf = JSON.parse(t.custom_api_config);
+                                    apiUrl = conf.apiUrl;
+                                    apiKey = conf.apiKey;
+                                    model = conf.model;
+                                    sysPrompt = conf.systemPrompt || '';
+                                    isConfigValid = !!apiUrl;
+                                } catch (e) {}
+                            }
+
+                            if (!isConfigValid) {
+                                await saveTask({ ...t, status: 'todo' }); // Revert
+                                continue;
+                            }
+
+                            let chatHistory: any[] = [];
+                            if (t.chat_history) {
+                                try { chatHistory = JSON.parse(t.chat_history); } catch(e){}
+                            }
+
+                            if (chatHistory.length === 0) {
+                                const initialPrompt = `[Initial Project Manager Prompt / 强制系统指令]\nRole Context: \n${sysPrompt}\n\nTask Assigned:\nTitle: ${t.title}\nDescription: ${t.description}\n\nProject Local Save Path: ${proj.save_path || 'Unknown'}\n\nINSTRUCTIONS FOR FILE OUTPUT:\nWhen outputting code or content that should be saved to a file, NEVER just output it in chat. You MUST output it strictly wrapped in a special XML-like tag format so the system can parse and save it automatically. Format:\n<file path="relative/path/from/project/root/filename.extension">\nYOUR_CODE_OR_CONTENT_HERE\n</file>\n\nIf you don't know where to put it, create standard structural directories like 'src/components', 'docs/', or 'scripts/' inside the project automatically based on your expertise. Provide a brief chat summary after the file blocks.`;
+                                chatHistory.push({ role: 'system', content: initialPrompt });
+                                chatHistory.push({ role: 'user', content: 'Please start executing this task now based on your constraints and context.' });
+                            } else {
+                                chatHistory.push({ role: 'user', content: '[System Automaton Trigger] Please continue/start executing this task.' });
+                            }
+
+                            try {
+                                const response = await callLLM(apiUrl, apiKey, model, chatHistory as LLMMessage[]);
+                                chatHistory.push({ role: 'assistant', content: response });
+                                
+                                if (proj.save_path) {
+                                    await parseAndSaveFiles(response, proj.save_path);
+                                }
+                                
+                                await saveTask({ 
+                                    ...t, 
+                                    status: 'pending-review', 
+                                    chat_history: JSON.stringify(chatHistory),
+                                    deliverables: t.deliverables ? t.deliverables + '\n\n---\n' + response : response
+                                });
+
+                            } catch (e: any) {
+                                console.error("Auto execute task LLM error:", e);
+                                chatHistory.push({ role: 'assistant', content: `[API Error during auto-execution: ${e.message}]` });
+                                await saveTask({ ...t, status: 'todo', chat_history: JSON.stringify(chatHistory) });
+                            }
+
+                            loadTasks();
+                            break; // Stop loop and wait for next tick to run next task sequentially
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Execution loop error:", e);
+            }
+        };
+
+        const interval = setInterval(executeStep, 5000);
+        return () => clearInterval(interval);
+    }, [isRunning, projectId]);
+
     const onNodesChange = useCallback(
         (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
         [],
@@ -127,19 +276,19 @@ export default function ProjectWorkspace() {
         let stagePrompt = "";
         switch (stage) {
             case 'research':
-                stagePrompt = "你现在是一名高级项目管理，你需要和人类同事(用户)以及其他AI同事一起开发项目。现在项目正处于调研阶段，用户会告诉你他/她的项目要求，你需要理解并分析用户需求。如果客户对需求的描述不清晰，或是你不能理解用户的意图，你应当首先和用户确认直至你完全理解用户的意图。当你完全理解用户的需求后，你需要分析并确认该项目的可行性和商业价值并告知用户。在用户让你开始设计实现方案前，你暂时不需要向用户提供具体的实现计划。你只需要告诉用户该需求能否被实现，实现过程中可能会遇到的风险或挑战，以及实现后预计用户可能获得的收益。最后你要提示用户点击对话框上方的“开始方案设计”按钮，让项目进入下一阶段。";
+                stagePrompt = t('pm_role_research');
                 break;
             case 'design':
-                stagePrompt = "现在项目正处于方案设计阶段。用户已确认了项目的可行性，并希望你为他设计一套执行方案。你需要告诉用户实现此项目的大致流程，以及需要用到的技术，资源，花费或是其他必要的条件。如果用户提出建议，你要判断用户的意见是否有效，然后视情况更新方案并对用户进行反馈。你要向用户确认是否赞同你的方案，若用户赞同，你要明确提示他点击对话框上方的“生成任务”按钮，让项目进入下一阶段。";
+                stagePrompt = t('pm_role_design');
                 break;
             case 'planning':
-                stagePrompt = "现在项目正处于任务规划阶段。用户已经同意了你的方案，并希望你将项目拆分成多个任务。" + employeeContext + "\n你必须按照用户（人类）和AI同事的能力，把项目拆分成合理的任务模块，并对任务模块进行命名，生成具体的任务描述，前置任务，以及安排最适合的AI同事(ai_id)或让用户执行。如果你没有适合的AI同事执行某项任务，则该项任务交予你自己或者用户完成。\n\nIMPORTANT INSTRUCTIONS FOR TASK GENERATION:\n1. 在完成任务生成后，你必须返回一个装载所有任务信息的json格式任务列表。\n2. 除此之外，不要回复任何其他东西。\n3. Output STRICTLY in a JSON block wrapped exactly in ```json-task-list ... ```.\n4. Each task MUST have a 'temp_id' (e.g., 't1', 't2') and a 'dependencies' array containing the temp_ids of prerequisite tasks.\nExample Format:\n```json-task-list\n[{\"temp_id\": \"t1\", \"title\": \"Task Title\", \"description\": \"Task description\", \"assignee_type\": \"human\" | \"predefinedAI\", \"ai_id\": 123, \"dependencies\": []}]\n```";
+                stagePrompt = t('pm_role_planning') + employeeContext + "\n你必须按照用户（人类）和AI同事的能力，把项目拆分成合理的任务模块，并对任务模块进行命名，生成具体的任务描述，前置任务，以及安排最适合的AI同事(ai_id)或让用户执行。如果你没有适合的AI同事执行某项任务，则该项任务交予你自己或者用户完成。\n\nIMPORTANT INSTRUCTIONS FOR TASK GENERATION:\n1. 在完成任务生成后，你必须返回一个装载所有任务信息的json格式任务列表。\n2. 除此之外，不要回复任何其他东西。\n3. Output STRICTLY in a JSON block wrapped exactly in ```json-task-list ... ```.\n4. Each task MUST have a 'temp_id' (e.g., 't1', 't2') and a 'dependencies' array containing the temp_ids of prerequisite tasks.\nExample Format:\n```json-task-list\n[{\"temp_id\": \"t1\", \"title\": \"Task Title\", \"description\": \"Task description\", \"assignee_type\": \"human\" | \"predefinedAI\", \"ai_id\": 123, \"dependencies\": []}]\n```";
                 break;
             case 'execution':
-                stagePrompt = "现在项目正处于执行阶段。用户已经按照你的规划的任务开始推进项目，以后用户和你对话的时候你需要根据当前已有的任务和项目进展向用户提供建议。如果项目完成，提示用户点击顶部的“确认项目完成”按钮。";
+                stagePrompt = t('pm_role_execution');
                 break;
             case 'maintenance':
-                stagePrompt = "现在项目正处于后续开发阶段。该项目已经完成，但用户可能提出后续的修改需求。如果确认到用户需求，请分析并提供用户修改方案。如果用户同意方案，请提示用户点击顶部的“生成任务”按钮。";
+                stagePrompt = t('pm_role_maintenance');
                 break;
         }
         return (basePrompt || '') + "\n\n[当前项目阶段系统指令]:\n" + stagePrompt;
@@ -151,16 +300,16 @@ export default function ProjectWorkspace() {
         switch (projectStage) {
             case 'research':
                 nextStage = 'design';
-                triggerMessage = "[系统动作] 用户点击了“开始方案设计”，请立刻为用户设计一套执行方案。";
+                triggerMessage = t('pm_trigger_design');
                 break;
             case 'design':
             case 'maintenance':
                 nextStage = 'planning';
-                triggerMessage = "[系统动作] 用户点击了“生成任务”，请立即为你刚才设计的方案生成包含所有任务架构的特殊JSON区块返回，除此之外不要包含任何多余文字。";
+                triggerMessage = t('pm_trigger_planning');
                 break;
             case 'execution':
                 nextStage = 'maintenance';
-                triggerMessage = "[系统动作] 用户点击了“确认项目完成”，项目进入后续开发阶段，请说一句简短的庆祝祝福语，并表明你会继续提供后续支持。";
+                triggerMessage = t('pm_trigger_maintenance');
                 break;
         }
         if (nextStage) {
@@ -200,9 +349,18 @@ export default function ProjectWorkspace() {
                 : `\n\nAVAILABLE AI EMPLOYEES: None.\n`;
 
             const messages: LLMMessage[] = [];
+            
+            let pmSystemPrompt = getSystemPromptForStage(effectiveStage, manager.system_prompt || '', employeeContext);
+            if (manager.skill_path) {
+                try {
+                    const skillData = await readTextFile(manager.skill_path);
+                    pmSystemPrompt += `\n\n[Skill Knowledge Base]\n${skillData}`;
+                } catch(e) { console.error("Could not load PM skill file", e) }
+            }
+
             messages.push({
                 role: 'system',
-                content: getSystemPromptForStage(effectiveStage, manager.system_prompt || '', employeeContext)
+                content: pmSystemPrompt
             });
 
             chatHistory.forEach(msg => messages.push({
@@ -262,7 +420,7 @@ export default function ProjectWorkspace() {
                             
                             loadTasks(); 
 
-                            const successMsg = `✅ *System:* Successfully generated and linked ${parsedTasks.length} tasks based on the plan.`;
+                            const successMsg = t('pm_task_generation_success');
                             const finalHistory = [...newHistoryResponse, { role: 'manager' as const, content: successMsg }];
                             setChatHistory(finalHistory);
                             await updateProjectChatHistory(projectId, JSON.stringify(finalHistory));
@@ -275,9 +433,9 @@ export default function ProjectWorkspace() {
                         console.error("Failed to parse tasks from JSON", e);
                     }
                 } else {
-                    if (window.confirm("任务生成失败，未在AI回复中检测到有效的JSON格式任务数据。是否让AI重新生成？")) {
+                    if (window.confirm(t('pm_task_generation_failed_confirm_retry'))) {
                         setTimeout(() => {
-                            handleSendChat("[系统警告] 你刚才输出了不符合规范的格式。你必须严格按照 ```json-task-list ... ``` 包裹且仅输出JSON。请重新生成！", 'planning');
+                            handleSendChat(t('pm_task_generation_retry_prompt'), 'planning');
                         }, 100);
                     } else {
                         // Revert to design if they cancel
@@ -301,6 +459,28 @@ export default function ProjectWorkspace() {
         if (ts) setSelectedTask(ts);
     };
 
+    const handleAddTaskClick = () => {
+        setSelectedTask({ project_id: projectId, title: t('new_task_title'), description: '', status: 'todo', assignee_type: 'human' });
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSendChat();
+        }
+    };
+
+    const getStageName = (stage: string) => {
+        switch (stage) {
+            case 'research': return t('stage_research');
+            case 'design': return t('stage_design');
+            case 'planning': return t('stage_planning');
+            case 'execution': return t('stage_execution');
+            case 'maintenance': return t('stage_maintenance');
+            default: return stage;
+        }
+    };
+
     return (
         <div className="flex w-full h-full">
             {/* Left Pane - Chat Manager */}
@@ -310,14 +490,30 @@ export default function ProjectWorkspace() {
             >
                 <div className="h-14 flex justify-between items-center px-4 border-b border-border shrink-0 bg-background/50">
                     <div className="font-bold text-sm text-foreground tracking-wider flex items-center gap-2">
-                        <span>Project Manager</span>
+                        <span>{t('project_manager')}</span>
                     </div>
                     <div>
-                        {projectStage === 'research' && <button onClick={handleStageTransition} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">开始方案设计</button>}
-                        {projectStage === 'design' && <button onClick={handleStageTransition} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">生成任务</button>}
-                        {projectStage === 'planning' && <div className="text-xs text-muted-foreground animate-pulse font-medium bg-accent px-3 py-1.5 rounded-md">任务生成中...</div>}
-                        {projectStage === 'execution' && <button onClick={handleStageTransition} className="bg-green-600 hover:bg-green-700 text-white shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">确认项目完成</button>}
-                        {projectStage === 'maintenance' && <button onClick={handleStageTransition} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">生成新改动任务</button>}
+                        {projectStage === 'research' && <button onClick={handleStageTransition} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">{t('btn_start_design')}</button>}
+                        {projectStage === 'design' && <button onClick={handleStageTransition} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">{t('btn_generate_tasks')}</button>}
+                        {projectStage === 'planning' && <div className="text-xs text-muted-foreground animate-pulse font-medium bg-accent px-3 py-1.5 rounded-md">{t('btn_generating_tasks')}</div>}
+                        {projectStage === 'execution' && <button onClick={handleStageTransition} className="bg-green-600 hover:bg-green-700 text-white shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">{t('btn_confirm_complete')}</button>}
+                        {projectStage === 'maintenance' && <button onClick={handleStageTransition} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm text-xs px-3 py-1.5 rounded-md font-medium transition-colors">{t('btn_generate_new_tasks')}</button>}
+                    </div>
+                </div>
+
+                <div className="h-full flex flex-col bg-card border-r border-border min-w-[360px] max-w-[400px]">
+                    <div className="p-4 border-b border-border bg-accent/30 flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold">
+                            {manager ? manager.name.charAt(0) : 'PM'}
+                        </div>
+                        <div>
+                            <h2 className="font-bold text-lg">{manager?.name || t('ws_pm')}</h2>
+                            <p className="text-xs text-muted-foreground flex items-center gap-2">
+                                <span className="px-2 py-0.5 rounded-full bg-background border border-border">
+                                    {getStageName(projectStage)}
+                                </span>
+                            </p>
+                        </div>
                     </div>
                 </div>
 
@@ -325,7 +521,7 @@ export default function ProjectWorkspace() {
                     {chatHistory.map((msg, i) => (
                         <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                             <span className={`text-xs mb-1 text-muted-foreground ${msg.role === 'user' ? 'mr-1' : 'ml-1'}`}>
-                                {msg.role === 'user' ? 'You' : 'Project Manager'}
+                                {msg.role === 'user' ? t('you') : t('project_manager')}
                             </span>
                             <div className={`px-4 py-3 rounded-2xl max-w-[90%] text-sm ${msg.role === 'user'
                                 ? 'bg-primary text-primary-foreground rounded-tr-sm'
@@ -345,7 +541,7 @@ export default function ProjectWorkspace() {
                                             code: ({ node, inline, ...props }: any) => inline ? <code className="bg-background/50 px-1 py-0.5 rounded text-xs text-foreground" {...props} /> : <code {...props} />
                                         }}
                                     >
-                                        {msg.content.replace(/```json-task-list\n[\s\S]*?\n```/g, '> 🗂️ *(Task generation JSON payload processed)*')}
+                                        {msg.content.replace(/```json-task-list\n([\s\S]*?)\n```/g, '> 🗂️ *(Task generation JSON payload processed)*')}
                                     </ReactMarkdown>
                                 ) : (
                                     <div className="whitespace-pre-wrap">{msg.content}</div>
@@ -355,10 +551,10 @@ export default function ProjectWorkspace() {
                     ))}
                     {isChatLoading && (
                         <div className="flex flex-col items-start">
-                            <span className="text-xs mb-1 text-muted-foreground ml-1">Project Manager</span>
+                            <span className="text-xs mb-1 text-muted-foreground ml-1">{t('project_manager')}</span>
                             <div className="px-4 py-3 rounded-2xl bg-accent text-accent-foreground rounded-tl-sm flex items-center gap-2">
                                 <Loader2 size={16} className="animate-spin" />
-                                <span className="text-sm">Thinking...</span>
+                                <span className="text-sm">{t('ai_thinking')}</span>
                             </div>
                         </div>
                     )}
@@ -367,25 +563,27 @@ export default function ProjectWorkspace() {
                 <div className="p-4 border-t border-border bg-background shrink-0">
                     <div className="flex flex-col gap-2">
                         <textarea
-                            className="w-full p-2 border border-border rounded-md bg-transparent text-sm resize-none custom-scrollbar focus:outline-none focus:ring-1 focus:ring-primary/50"
-                            placeholder="Describe your workflow... (Shift+Enter for newline)"
-                            rows={8}
                             value={chatInput}
-                            onChange={e => setChatInput(e.target.value)}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSendChat();
-                                }
-                            }}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            disabled={isChatLoading || isRunning}
+                            className="w-full bg-transparent border-none outline-none resize-none text-sm placeholder:text-muted-foreground/60 focus:ring-0"
+                            placeholder={isRunning ? t('ws_running_placeholder') : t('ws_chat_ph')}
+                            rows={8}
                         />
-                        <button
-                            onClick={() => handleSendChat()}
-                            disabled={isChatLoading || !chatInput.trim()}
-                            className="bg-primary text-primary-foreground px-4 py-2 rounded-md font-medium hover:opacity-90 disabled:opacity-50 self-end transition-opacity"
-                        >
-                            Send
-                        </button>
+                        <div className="flex justify-between items-center mt-2 border-t border-border/50 pt-2">
+                            <div className="text-xs text-muted-foreground">
+                                {isChatLoading ? t('ai_thinking') : null}
+                            </div>
+                            <button
+                                onClick={() => handleSendChat()}
+                                disabled={isChatLoading || !chatInput.trim() || isRunning}
+                                className="bg-primary text-primary-foreground px-4 py-1.5 rounded-md text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2"
+                            >
+                                {isChatLoading ? <Loader2 size={14} className="animate-spin" /> : null}
+                                {t('ws_chat_send')}
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -398,26 +596,34 @@ export default function ProjectWorkspace() {
             {/* Right Pane - Canvas Map & Kanban */}
             <div className="flex-1 flex flex-col h-full bg-background relative overflow-hidden">
                 <div className="absolute top-4 left-4 z-10 bg-card border border-border rounded-md px-3 py-2 shadow-sm flex items-center gap-4">
-                    <span className="font-semibold text-sm">Task View</span>
+                    <span className="font-semibold text-sm">{t('ws_task_view')}</span>
                     <div className="flex bg-accent/50 rounded-md p-1">
                         <button
                             onClick={() => setViewMode('graph')}
                             className={`p-1.5 rounded flex items-center gap-1 text-xs transition-colors ${viewMode === 'graph' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                         >
-                            <Network size={14} /> Graph
+                            <Network size={14} /> {t('ws_graph')}
                         </button>
                         <button
                             onClick={() => setViewMode('kanban')}
                             className={`p-1.5 rounded flex items-center gap-1 text-xs transition-colors ${viewMode === 'kanban' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                         >
-                            <LayoutGrid size={14} /> Kanban
+                            <LayoutGrid size={14} /> {t('ws_kanban')}
+                        </button>
+                    </div>
+                    <div className="flex items-center gap-2 border-l border-border pl-4">
+                        <button
+                            onClick={handleToggleExecution}
+                            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded font-medium shadow-sm transition-colors ${isRunning ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}
+                        >
+                            {isRunning ? <><Pause size={14}/> {t('ws_pause_proj')}</> : <><Play size={14}/> {t('ws_start_proj')}</>}
                         </button>
                     </div>
                     <button
-                        onClick={() => setSelectedTask({ project_id: projectId, title: 'New Task', description: '', status: 'todo', assignee_type: 'human' })}
+                        onClick={handleAddTaskClick}
                         className="flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90 transition-opacity ml-4"
                     >
-                        <Plus size={14} /> Add Task
+                        <Plus size={14} /> {t('ws_add_task')}
                     </button>
                 </div>
                 <div className="w-full h-full pt-16 pb-4 px-4 overflow-auto">

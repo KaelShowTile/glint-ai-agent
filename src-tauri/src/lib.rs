@@ -39,6 +39,15 @@ fn save_asset(project_path: String, file_type: String, file_name: String, base64
     Ok(file_path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn save_file(absolute_path: String, content: String) -> Result<String, String> {
+    if let Some(parent) = std::path::Path::new(&absolute_path).parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&absolute_path, content).map_err(|e| e.to_string())?;
+    Ok(absolute_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = vec![
@@ -122,6 +131,16 @@ pub fn run() {
             description: "add_stage_to_projects",
             sql: "ALTER TABLE projects ADD COLUMN stage TEXT DEFAULT 'research';",
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 6,
+            description: "add_execution_and_skills_columns",
+            sql: "
+            ALTER TABLE projects ADD COLUMN is_running BOOLEAN DEFAULT 0;
+            ALTER TABLE tasks ADD COLUMN chat_history TEXT;
+            ALTER TABLE ai_employees ADD COLUMN skill_path TEXT;
+            ",
+            kind: MigrationKind::Up,
         }
     ];
 
@@ -135,7 +154,7 @@ pub fn run() {
                 .build()
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![save_asset])
+        .invoke_handler(tauri::generate_handler![save_asset, save_file, greet])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

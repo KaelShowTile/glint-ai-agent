@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
-import { Edit2, Trash2, Users, Loader2 } from 'lucide-react';
+import { Edit2, Trash2, Users, Loader2, FileCode } from 'lucide-react';
 import { AIEmployee, getEmployees, createEmployee, updateEmployee, deleteEmployee } from '../lib/employees';
 import { getGoogleModels } from '../lib/llm';
+import { open } from '@tauri-apps/plugin-dialog';
+import { useTranslation } from '../lib/i18n';
 
 export default function Employees() {
+    const { t } = useTranslation();
     const [employees, setEmployees] = useState<AIEmployee[]>([]);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [isFetchingModels, setIsFetchingModels] = useState(false);
     const [formData, setFormData] = useState<AIEmployee>({
-        name: '', role: '', api_url: '', api_key: '', model: '', system_prompt: ''
+        name: '', role: '', api_url: '', api_key: '', model: '', system_prompt: '', skill_path: ''
     });
 
     const loadEmployees = async () => {
@@ -35,7 +38,7 @@ export default function Employees() {
                 await createEmployee(formData);
             }
             setEditingId(null);
-            setFormData({ name: '', role: '', api_url: '', api_key: '', model: '', system_prompt: '' });
+            setFormData({ name: '', role: '', api_url: '', api_key: '', model: '', system_prompt: '', skill_path: '' });
             setAvailableModels([]);
             loadEmployees();
         } catch (e: any) {
@@ -77,21 +80,22 @@ export default function Employees() {
         <div className="p-8 max-w-5xl mx-auto flex flex-col h-full gap-6">
             <div className="flex justify-between items-end">
                 <div>
-                    <h1 className="text-3xl font-bold">AI Employees</h1>
+                    <h1 className="text-3xl font-bold">{t('emp_title')}</h1>
                     <p className="text-muted-foreground mt-2">Create and manage your AI agent base personas.</p>
                 </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 flex-1 min-h-0">
                 <div className="md:col-span-1 bg-card border border-border rounded-lg p-5 flex flex-col gap-4 overflow-y-auto">
-                    <h2 className="font-semibold text-lg">{editingId ? 'Edit AI Employee' : 'New AI Employee'}</h2>
+                    <h2 className="font-semibold text-lg">{editingId ? 'Edit AI Employee' : t('emp_add')}</h2>
 
-                    <input className="w-full p-2 border border-border rounded-md bg-transparent" placeholder="Name (e.g. Senior Planner)" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
-                    <input className="w-full p-2 border border-border rounded-md bg-transparent" placeholder="Role Description" value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })} />
+                    <input className="w-full p-2 border border-border rounded-md bg-transparent" placeholder={t('emp_name')} value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+                    <input className="w-full p-2 border border-border rounded-md bg-transparent" placeholder={t('emp_role')} value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })} />
                     <select className="w-full p-2 border border-border rounded-md bg-transparent text-sm" value={formData.api_url} onChange={e => setFormData({ ...formData, api_url: e.target.value })}>
-                        <option value="" disabled>-- Select API Provider --</option>
+                        <option value="" disabled>-- {t('emp_provider')} --</option>
                         <option value="OpenAI/LM Studio">OpenAI/LM Studio</option>
                         <option value="Google">Google (Gemini API)</option>
+                        <option value="Groq">Groq</option>
                         <option value="ComfyUI">ComfyUI (Image Generation)</option>
                     </select>
                     <input className="w-full p-2 border border-border rounded-md bg-transparent text-sm" placeholder="API Key" type="password" value={formData.api_key} onChange={e => setFormData({ ...formData, api_key: e.target.value })} />
@@ -102,7 +106,7 @@ export default function Employees() {
                                 {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
                             </select>
                         ) : (
-                            <input className="flex-1 p-2 border border-border rounded-md bg-transparent text-sm" placeholder="Model (e.g. gpt-4o or gemini-1.5-pro)" value={formData.model} onChange={e => setFormData({ ...formData, model: e.target.value })} />
+                            <input className="flex-1 p-2 border border-border rounded-md bg-transparent text-sm" placeholder={t('emp_model')} value={formData.model} onChange={e => setFormData({ ...formData, model: e.target.value })} />
                         )}
 
                         {formData.api_url === 'Google' && (
@@ -112,14 +116,39 @@ export default function Employees() {
                         )}
                     </div>
 
-                    <textarea className="w-full p-2 border border-border rounded-md bg-transparent min-h-[120px] text-sm" placeholder="System Prompt (Constraints and style)..." value={formData.system_prompt} onChange={e => setFormData({ ...formData, system_prompt: e.target.value })} />
+                    <div className="flex gap-2">
+                        <input className="flex-1 p-2 border border-border rounded-md bg-accent/20 text-sm cursor-not-allowed" placeholder={t('emp_skill')} value={formData.skill_path || ''} readOnly />
+                        <button 
+                            onClick={async () => {
+                                const selected = await open({
+                                    multiple: false,
+                                    directory: false,
+                                    title: "Select Skill File for AI Employee"
+                                });
+                                if (selected && typeof selected === 'string') {
+                                    setFormData({ ...formData, skill_path: selected });
+                                }
+                            }} 
+                            className="bg-accent text-accent-foreground px-3 py-2 rounded-md hover:opacity-80 transition-opacity flex items-center justify-center border border-border"
+                            title="Browse Skill File"
+                        >
+                            <FileCode size={16} />
+                        </button>
+                        {formData.skill_path && (
+                            <button onClick={() => setFormData({...formData, skill_path: ''})} className="bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive hover:text-white px-3 rounded-md transition-colors flex items-center justify-center">
+                                <Trash2 size={16} />
+                            </button>
+                        )}
+                    </div>
+
+                    <textarea className="w-full p-2 border border-border rounded-md bg-transparent min-h-[120px] text-sm" placeholder={t('emp_prompt')} value={formData.system_prompt} onChange={e => setFormData({ ...formData, system_prompt: e.target.value })} />
 
                     <button onClick={handleSave} className="mt-2 w-full bg-primary text-primary-foreground p-2 rounded-md font-medium hover:opacity-90 transition-opacity">
-                        {editingId ? 'Update Employee' : 'Create Employee'}
+                        {editingId ? 'Update Employee' : t('emp_save')}
                     </button>
 
                     {editingId && (
-                        <button onClick={() => { setEditingId(null); setFormData({ name: '', role: '', api_url: '', api_key: '', model: '', system_prompt: '' }); setAvailableModels([]); }} className="w-full border border-border bg-transparent text-foreground p-2 rounded-md hover:bg-accent transition-colors">
+                        <button onClick={() => { setEditingId(null); setFormData({ name: '', role: '', api_url: '', api_key: '', model: '', system_prompt: '', skill_path: '' }); setAvailableModels([]); }} className="w-full border border-border bg-transparent text-foreground p-2 rounded-md hover:bg-accent transition-colors">
                             Cancel
                         </button>
                     )}
@@ -143,6 +172,7 @@ export default function Employees() {
                                 <div className="mt-3 flex gap-2 flex-wrap text-xs">
                                     <span className="px-2 py-1 bg-accent rounded-full border border-border font-mono">{emp.model || 'No model'}</span>
                                     <span className="px-2 py-1 bg-accent rounded-full border border-border truncate max-w-[200px]" title={emp.api_url}>{emp.api_url || 'No API Provider'}</span>
+                                    {emp.skill_path && <span className="px-2 py-1 bg-primary/10 text-primary rounded-full border border-primary/20 flex items-center gap-1"><FileCode size={12}/> Skill Loaded</span>}
                                 </div>
                             </div>
                         </div>

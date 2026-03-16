@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Users, Settings, Moon, Sun, Briefcase, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, Settings as SettingsIcon, Moon, Sun, Briefcase, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
+import { useTranslation } from '../lib/i18n';
 
 export default function Layout() {
     const { theme, toggleTheme } = useTheme();
+    const { t } = useTranslation();
     const location = useLocation();
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -17,9 +19,9 @@ export default function Layout() {
     }, [location.pathname]);
 
     const navItems = [
-        { name: 'Projects', path: '/', icon: Briefcase },
-        { name: 'AI Employees', path: '/employees', icon: Users },
-        { name: 'Settings', path: '/settings', icon: Settings },
+        { name: t('nav_projects'), path: '/', icon: Briefcase },
+        { name: t('nav_employees'), path: '/employees', icon: Users },
+        { name: t('nav_settings'), path: '/settings', icon: SettingsIcon },
     ];
 
     return (

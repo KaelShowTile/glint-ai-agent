@@ -8,6 +8,7 @@ export interface Project {
     manager_ai_id?: number | null;
     chat_history?: string;
     stage?: string;
+    is_running?: number;
     created_at?: string;
     status?: string;
 }
@@ -26,7 +27,7 @@ export async function getProjectById(id: number): Promise<Project | null> {
 export async function createProject(proj: Project): Promise<number> {
     const db = await getDb();
     const res = await db.execute(
-        'INSERT INTO projects (name, description, status, save_path, manager_ai_id) VALUES ($1, $2, $3, $4, $5)',
+        'INSERT INTO projects (name, description, status, save_path, manager_ai_id, is_running) VALUES ($1, $2, $3, $4, $5, 0)',
         [proj.name, proj.description, proj.status || 'active', proj.save_path || '', proj.manager_ai_id ?? null]
     );
     return res.lastInsertId as number;
@@ -45,6 +46,11 @@ export async function updateProjectChatHistory(id: number, chatHistory: string):
 export async function updateProjectStage(id: number, stage: string): Promise<void> {
     const db = await getDb();
     await db.execute('UPDATE projects SET stage=$1 WHERE id=$2', [stage, id]);
+}
+
+export async function updateProjectIsRunning(id: number, isRunning: number): Promise<void> {
+    const db = await getDb();
+    await db.execute('UPDATE projects SET is_running=$1 WHERE id=$2', [isRunning, id]);
 }
 
 export interface ComfyTemplate {

@@ -11,6 +11,7 @@ export interface WorkflowTask {
     custom_api_config?: string | null;  // JSON string: { apiUrl, apiKey, model, systemPrompt }
     deliverables?: string | null;       // The final output of the task
     parent_task_ids?: string | null;    // JSON string: array of integer IDs e.g. "[1, 2]"
+    chat_history?: string | null;       // JSON string: array of LLM messages
 }
 
 export async function getTasks(projectId: number): Promise<WorkflowTask[]> {
@@ -24,16 +25,16 @@ export async function saveTask(task: WorkflowTask): Promise<number | null> {
         await db.execute(
             `UPDATE tasks SET 
         title=$1, description=$2, status=$3, assignee_type=$4, 
-        ai_id=$5, custom_api_config=$6, deliverables=$7, parent_task_ids=$8 
-       WHERE id=$9`,
-            [task.title, task.description, task.status, task.assignee_type, task.ai_id, task.custom_api_config, task.deliverables, task.parent_task_ids, task.id]
+        ai_id=$5, custom_api_config=$6, deliverables=$7, parent_task_ids=$8, chat_history=$9 
+       WHERE id=$10`,
+            [task.title, task.description, task.status, task.assignee_type, task.ai_id, task.custom_api_config, task.deliverables, task.parent_task_ids, task.chat_history || null, task.id]
         );
         return task.id;
     } else {
         const res = await db.execute(
-            `INSERT INTO tasks (project_id, title, description, status, assignee_type, ai_id, custom_api_config, deliverables, parent_task_ids) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [task.project_id, task.title, task.description, task.status || 'todo', task.assignee_type || 'human', task.ai_id ?? null, task.custom_api_config, task.deliverables, task.parent_task_ids || '[]']
+            `INSERT INTO tasks (project_id, title, description, status, assignee_type, ai_id, custom_api_config, deliverables, parent_task_ids, chat_history) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [task.project_id, task.title, task.description, task.status || 'todo', task.assignee_type || 'human', task.ai_id ?? null, task.custom_api_config, task.deliverables, task.parent_task_ids || '[]', task.chat_history || null]
         );
         return res.lastInsertId ?? null;
     }

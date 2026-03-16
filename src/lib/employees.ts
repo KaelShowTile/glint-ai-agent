@@ -8,6 +8,7 @@ export interface AIEmployee {
     api_key: string;
     model: string;
     system_prompt: string;
+    skill_path?: string;
 }
 
 export async function getEmployees(): Promise<AIEmployee[]> {
@@ -24,16 +25,16 @@ export async function getEmployeeById(id: number): Promise<AIEmployee | null> {
 export async function createEmployee(emp: AIEmployee): Promise<void> {
     const db = await getDb();
     await db.execute(
-        'INSERT INTO ai_employees (name, role, api_url, api_key, model, system_prompt) VALUES ($1, $2, $3, $4, $5, $6)',
-        [emp.name, emp.role, emp.api_url, emp.api_key, emp.model, emp.system_prompt]
+        'INSERT INTO ai_employees (name, role, api_url, api_key, model, system_prompt, skill_path) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [emp.name, emp.role, emp.api_url, emp.api_key, emp.model, emp.system_prompt, emp.skill_path || null]
     );
 }
 
 export async function updateEmployee(id: number, emp: AIEmployee): Promise<void> {
     const db = await getDb();
     await db.execute(
-        'UPDATE ai_employees SET name=$1, role=$2, api_url=$3, api_key=$4, model=$5, system_prompt=$6 WHERE id=$7',
-        [emp.name, emp.role, emp.api_url, emp.api_key, emp.model, emp.system_prompt, id]
+        'UPDATE ai_employees SET name=$1, role=$2, api_url=$3, api_key=$4, model=$5, system_prompt=$6, skill_path=$7 WHERE id=$8',
+        [emp.name, emp.role, emp.api_url, emp.api_key, emp.model, emp.system_prompt, emp.skill_path || null, id]
     );
 }
 

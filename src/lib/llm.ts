@@ -65,13 +65,19 @@ export async function callLLM(
         const data = await res.json();
         return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     }
-    else if (provider === 'OpenAI/LM Studio') {
-        // If API key is empty or says "local", default to LM Studio typical local port, otherwise standard OpenAI
-        const isLocal = !apiKey || apiKey.toLowerCase() === 'local';
-        const url = isLocal ? 'http://localhost:1234/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions';
+    else if (provider === 'OpenAI/LM Studio' || provider === 'Groq' || provider.startsWith('http')) {
+        // If API key is empty or says "local" for OpenAI/LM Studio, default to LM Studio typical local port
+        const isLocal = provider === 'OpenAI/LM Studio' && (!apiKey || apiKey.toLowerCase() === 'local');
+        
+        let url = provider; // Assume it's a full URL if it starts with http
+        if (provider === 'OpenAI/LM Studio') {
+            url = isLocal ? 'http://localhost:1234/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions';
+        } else if (provider === 'Groq') {
+            url = 'https://api.groq.com/openai/v1/chat/completions';
+        }
 
         const body: any = {
-            model: model || 'gpt-3.5-turbo',
+            model: model || (provider === 'Groq' ? 'llama3-8b-8192' : 'gpt-3.5-turbo'),
             messages: messages
         };
 
@@ -83,14 +89,14 @@ export async function callLLM(
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                ...(!isLocal ? { 'Authorization': `Bearer ${apiKey}` } : {})
+                ...((!isLocal && apiKey) ? { 'Authorization': `Bearer ${apiKey}` } : {})
             },
             body: JSON.stringify(body)
         });
 
         if (!res.ok) {
             const err = await res.text();
-            throw new Error(`OpenAI API Error: ${err}`);
+            throw new Error(`OpenAI/Compatible API Error: ${err}`);
         }
 
         const data = await res.json();

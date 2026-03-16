@@ -4,8 +4,10 @@ import { AIEmployee, getEmployees } from '../lib/employees';
 import { Trash2, FolderPlus, FileJson } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTranslation } from '../lib/i18n';
 
 export default function Projects() {
+    const { t } = useTranslation();
     const [projects, setProjects] = useState<Project[]>([]);
     const [employees, setEmployees] = useState<AIEmployee[]>([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -52,11 +54,11 @@ export default function Projects() {
         <div className="p-8 max-w-6xl mx-auto flex flex-col h-full relative">
             <div className="flex justify-between items-center mb-8">
                 <div>
-                    <h1 className="text-3xl font-bold">Projects</h1>
+                    <h1 className="text-3xl font-bold">{t('projects_title')}</h1>
                     <p className="text-muted-foreground mt-2">Manage your AI workflows and view project status.</p>
                 </div>
                 <button onClick={() => setIsModalOpen(true)} className="bg-primary text-primary-foreground px-4 py-2 rounded-md font-medium flex items-center gap-2 hover:opacity-90 transition-opacity">
-                    <FolderPlus size={18} /> New Project
+                    <FolderPlus size={18} /> {t('projects_new')}
                 </button>
             </div>
 
@@ -89,14 +91,14 @@ export default function Projects() {
             {isModalOpen && (
                 <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
                     <div className="bg-card w-full max-w-md p-6 rounded-lg border border-border shadow-lg">
-                        <h2 className="text-2xl font-bold mb-4">Create New Project</h2>
+                        <h2 className="text-2xl font-bold mb-4">{t('projects_new')}</h2>
                         <div className="space-y-4">
                             <div>
-                                <label className="text-sm font-medium mb-1 block">Project Name</label>
+                                <label className="text-sm font-medium mb-1 block">{t('projects_name')}</label>
                                 <input autoFocus className="w-full p-2 border border-border rounded-md bg-transparent" value={newProject.name} onChange={e => setNewProject({ ...newProject, name: e.target.value })} placeholder="e.g. Graphic Novel Generator" />
                             </div>
                             <div>
-                                <label className="text-sm font-medium mb-1 block">Description</label>
+                                <label className="text-sm font-medium mb-1 block">{t('projects_desc')}</label>
                                 <textarea className="w-full p-2 border border-border rounded-md bg-transparent" rows={3} value={newProject.description} onChange={e => setNewProject({ ...newProject, description: e.target.value })} placeholder="Brief overview of what this workflow will accomplish..." />
                             </div>
                             <div>
@@ -110,7 +112,7 @@ export default function Projects() {
                                 </div>
                             </div>
                             <div>
-                                <label className="text-sm font-medium mb-1 block">AI Project Manager (Auto-assignee)</label>
+                                <label className="text-sm font-medium mb-1 block">{t('projects_manager')}</label>
                                 <select
                                     className="w-full p-2 border border-border rounded-md bg-transparent text-sm"
                                     value={newProject.manager_ai_id}
@@ -122,8 +124,8 @@ export default function Projects() {
                             </div>
                         </div>
                         <div className="mt-6 flex justify-end gap-3">
-                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 border border-border rounded-md hover:bg-accent transition-colors">Cancel</button>
-                            <button onClick={handleCreate} disabled={!newProject.name || !newProject.save_path} className="px-4 py-2 bg-primary text-primary-foreground rounded-md disabled:opacity-50">Create Project</button>
+                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 border border-border rounded-md hover:bg-accent transition-colors">{t('projects_cancel')}</button>
+                            <button onClick={handleCreate} disabled={!newProject.name || !newProject.save_path} className="px-4 py-2 bg-primary text-primary-foreground rounded-md disabled:opacity-50">{t('projects_create')}</button>
                         </div>
                     </div>
                 </div>
