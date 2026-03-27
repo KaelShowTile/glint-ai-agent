@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
 import { WorkflowTask, saveTask, deleteTask } from '../lib/tasks';
 import { AIEmployee, getEmployees } from '../lib/employees';
+import { ProjectInfo, getProjectInfos } from '../lib/project_info';
+import { Profession, getProfessions } from '../lib/professions';
 import { callLLM, LLMMessage } from '../lib/llm';
-import { X, Save, Paperclip, Bot, User, Plus, Trash2, Loader2, MessageSquare } from 'lucide-react';
+import { isCommandAllowed, autoGitSnapshot, executeShellCommand } from '../lib/shell';
+import { X, Save, Paperclip, Bot, User, Plus, Trash2, Loader2, MessageSquare, AlertTriangle, CheckCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { getProjectById } from '../lib/projects';
 import { readTextFile } from '@tauri-apps/plugin-fs';
@@ -22,15 +25,20 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
     const [customApiConfig, setCustomApiConfig] = useState({ apiUrl: '', apiKey: '', model: '', systemPrompt: '' });
     const [assets, setAssets] = useState<string[]>([]); // simplified asset repeater
     const [parentIds, setParentIds] = useState<number[]>([]);
+    const [projectInfos, setProjectInfos] = useState<ProjectInfo[]>([]);
+    const [professions, setProfessions] = useState<Profession[]>([]);
     
     // Chat state
     const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'assistant' | 'system', content: string }[]>([]);
     const [chatInput, setChatInput] = useState('');
     const [isChatLoading, setIsChatLoading] = useState(false);
+    const [pendingDangerousCommand, setPendingDangerousCommand] = useState<string | null>(null);
     const [projectPath, setProjectPath] = useState<string>('');
 
     useEffect(() => {
         getEmployees().then(setEmployees);
+        getProjectInfos(task.project_id).then(setProjectInfos);
+        getProfessions().then(setProfessions);
         getProjectById(task.project_id).then(p => setProjectPath(p?.save_path || ''));
         if (task.custom_api_config) {
             try { setCustomApiConfig(JSON.parse(task.custom_api_config)); } catch (e) { }
@@ -77,6 +85,16 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
             const emp = employees.find(e => e.id === formData.ai_id);
             if (emp) {
                 sysPrompt = emp.system_prompt;
+
+                const prof = professions.find(p => p.name === emp.role);
+                const relevantInfos = projectInfos.filter(info => info.target_profession_id === null || info.target_profession_id === prof?.id);
+                if (relevantInfos.length > 0) {
+                    sysPrompt += '\n\n[Project Information Base Context]\n';
+                    relevantInfos.forEach(info => {
+                        sysPrompt += `--- ${info.name} ---\n${info.content}\n\n`;
+                    });
+                }
+
                 if (emp.skill_path) {
                     try {
                         const skillData = await readTextFile(emp.skill_path);
@@ -90,20 +108,33 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
         return `[Initial Project Manager Prompt / 强制系统指令]\nRole Context: \n${sysPrompt}\n\nTask Assigned:\nTitle: ${formData.title}\nDescription: ${formData.description}\n\nProject Local Save Path: ${projectPath}\n\nINSTRUCTIONS FOR FILE OUTPUT:\nWhen outputting code or content that should be saved to a file, NEVER just output it in chat. You MUST output it strictly wrapped in a special XML-like tag format so the system can parse and save it automatically. Format:\n<file path="relative/path/from/project/root/filename.extension">\nYOUR_CODE_OR_CONTENT_HERE\n</file>\n\nIf you don't know where to put it, create standard structural directories like 'src/components', 'docs/', or 'scripts/' inside the project automatically based on your expertise. Provide a brief chat summary after the file blocks.`;
     };
 
-    const handleSendChat = async () => {
-        if (!chatInput.trim()) return;
+    const executeAndContinue = async (cmd: string, currentHistory: { role: 'user' | 'assistant' | 'system', content: string }[]) => {
         setIsChatLoading(true);
-        
-        let currentHistory = [...chatHistory];
-        if (currentHistory.length === 0) {
-            currentHistory.push({ role: 'system', content: await getInitialSystemPrompt() });
+        setPendingDangerousCommand(null);
+        try {
+            await autoGitSnapshot(projectPath);
+            const out = await executeShellCommand(cmd, projectPath);
+            const sysMsg = { role: 'system' as const, content: `[Command Execution Result]\n${out}` };
+            currentHistory.push(sysMsg);
+            setChatHistory([...currentHistory]);
+            await getAIResponse(currentHistory);
+        } catch(e: any) {
+            currentHistory.push({ role: 'system' as const, content: `[Execution Error]\n${e.message}` });
+            setChatHistory([...currentHistory]);
+            await getAIResponse(currentHistory);
         }
+    };
 
-        const userMsg = { role: 'user' as const, content: chatInput };
-        currentHistory.push(userMsg);
-        
-        setChatHistory(currentHistory);
-        setChatInput('');
+    const rejectAndContinue = async (currentHistory: { role: 'user' | 'assistant' | 'system', content: string }[]) => {
+        setPendingDangerousCommand(null);
+        currentHistory.push({ role: 'system' as const, content: `[System]: The user REJECTED the execution of the previous command. Please explain why you needed it or try another approach.` });
+        setChatHistory([...currentHistory]);
+        await getAIResponse(currentHistory);
+    };
+
+    const getAIResponse = async (history: { role: 'user' | 'assistant' | 'system', content: string }[]) => {
+        setIsChatLoading(true);
+        setPendingDangerousCommand(null);
 
         try {
             let apiUrl = '';
@@ -125,24 +156,59 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
                 throw new Error("Cannot execute AI for a Human assigned task.");
             }
 
-            const response = await callLLM(apiUrl, apiKey, model, currentHistory as LLMMessage[]);
+            const response = await callLLM(apiUrl, apiKey, model, history as LLMMessage[]);
             
-            currentHistory.push({ role: 'assistant', content: response });
-            setChatHistory(currentHistory);
+            history.push({ role: 'assistant', content: response });
+            setChatHistory([...history]);
             
-            // Auto-save silently so hit history isn't lost if closed
-            const updatedTask = { ...formData, chat_history: JSON.stringify(currentHistory) };
+            // Check for run_cmd pattern
+            const match = response.match(/<run_cmd>(.*?)<\/run_cmd>/s);
+            if (match) {
+                const cmd = match[1].trim();
+                if (isCommandAllowed(cmd)) {
+                    // Auto-execute if greenlisted
+                    await executeAndContinue(cmd, history);
+                    return; // Early return because executeAndContinue will loop
+                } else {
+                    // Yellow-list: Pause and wait for manual approval
+                    setPendingDangerousCommand(cmd);
+                }
+            }
+
+            // Save history
+            const updatedTask = { ...formData, chat_history: JSON.stringify(history) };
             setFormData(updatedTask);
             await saveTask(updatedTask);
-
         } catch (e: any) {
             console.error(e);
             const errorMsg = { role: 'assistant' as const, content: `[API Error: ${e.message}]` };
-            currentHistory.push(errorMsg);
-            setChatHistory(currentHistory);
+            history.push(errorMsg);
+            setChatHistory([...history]);
         } finally {
-            setIsChatLoading(false);
+            if (!history[history.length - 1].content.match(/<run_cmd>(.*?)<\/run_cmd>/s) || isCommandAllowed(history[history.length - 1].content.match(/<run_cmd>(.*?)<\/run_cmd>/s)?.[1] || '')) {
+                setIsChatLoading(false);
+            } else {
+                 setIsChatLoading(false); // Make sure to stop loading if waiting for approval
+            }
         }
+    };
+
+    const handleSendChat = async () => {
+        if (!chatInput.trim()) return;
+        setIsChatLoading(true);
+        
+        let currentHistory = [...chatHistory];
+        if (currentHistory.length === 0) {
+            currentHistory.push({ role: 'system', content: await getInitialSystemPrompt() });
+        }
+
+        const userMsg = { role: 'user' as const, content: chatInput };
+        currentHistory.push(userMsg);
+        
+        setChatHistory(currentHistory);
+        setChatInput('');
+
+        await getAIResponse(currentHistory);
     };
 
     const isAI = formData.assignee_type !== 'human';
@@ -317,13 +383,44 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
                                                         code: ({ node, inline, ...props }: any) => inline ? <code className="bg-background/50 px-1 py-0.5 rounded text-xs text-foreground" {...props} /> : <code {...props} />
                                                     }}
                                                 >
-                                                    {msg.content.replace(/<file[\s\S]*?>[\s\S]*?<\/file>/g, '> 💾 *(Generated a file block)*')}
+                                                    {msg.content.replace(/<file[\s\S]*?>[\s\S]*?<\/file>/g, '> 💾 *(Generated a file block)*').replace(/<run_cmd>[\s\S]*?<\/run_cmd>/g, '> ⚡ *(Requested Terminal Command)*')}
                                                 </ReactMarkdown>
                                             )}
                                         </div>
                                     </div>
                                 ))}
-                                {isChatLoading && (
+                                {pendingDangerousCommand && (
+                                    <div className="flex flex-col items-start mt-2">
+                                        <div className="px-4 py-4 rounded-xl max-w-[95%] bg-amber-500/10 border border-amber-500/30">
+                                            <div className="flex items-center gap-2 text-amber-500 mb-2 font-bold">
+                                                <AlertTriangle size={18} />
+                                                <span>Approval Required: Unknown Command</span>
+                                            </div>
+                                            <p className="text-xs text-muted-foreground mb-3">
+                                                The AI wants to execute the following command, which is not in the trusted allowlist. 
+                                                Executing unknown commands can be dangerous. A Git snapshot will be taken prior to execution.
+                                            </p>
+                                            <div className="bg-background/80 p-2 rounded border border-border text-xs font-mono mb-4 overflow-x-auto text-amber-400">
+                                                {pendingDangerousCommand}
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button 
+                                                    onClick={() => executeAndContinue(pendingDangerousCommand, chatHistory)}
+                                                    className="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-1.5 rounded-md text-xs font-bold transition-colors flex justify-center items-center gap-1"
+                                                >
+                                                    <CheckCircle size={14} /> Allow & Execute
+                                                </button>
+                                                <button 
+                                                    onClick={() => rejectAndContinue(chatHistory)}
+                                                    className="flex-1 bg-background border border-border hover:bg-destructive/10 hover:text-destructive hover:border-destructive/30 py-1.5 rounded-md text-xs font-medium transition-colors flex justify-center items-center gap-1"
+                                                >
+                                                    <X size={14} /> Reject
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                                {isChatLoading && !pendingDangerousCommand && (
                                     <div className="flex flex-col items-start">
                                         <div className="px-4 py-3 rounded-2xl bg-accent text-accent-foreground rounded-tl-sm flex items-center gap-2">
                                             <Loader2 size={16} className="animate-spin" />

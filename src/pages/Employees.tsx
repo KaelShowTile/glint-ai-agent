@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { Edit2, Trash2, Users, Loader2, FileCode } from 'lucide-react';
 import { AIEmployee, getEmployees, createEmployee, updateEmployee, deleteEmployee } from '../lib/employees';
 import { getGoogleModels } from '../lib/llm';
+import { Profession, getProfessions } from '../lib/professions';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from '../lib/i18n';
 
 export default function Employees() {
     const { t } = useTranslation();
     const [employees, setEmployees] = useState<AIEmployee[]>([]);
+    const [professions, setProfessions] = useState<Profession[]>([]);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [isFetchingModels, setIsFetchingModels] = useState(false);
@@ -19,6 +21,8 @@ export default function Employees() {
         try {
             const data = await getEmployees();
             setEmployees(data);
+            const profs = await getProfessions();
+            setProfessions(profs);
         } catch (e: any) {
             console.error(e);
             alert("Error loading employees: " + e.toString());
@@ -90,7 +94,21 @@ export default function Employees() {
                     <h2 className="font-semibold text-lg">{editingId ? 'Edit AI Employee' : t('emp_add')}</h2>
 
                     <input className="w-full p-2 border border-border rounded-md bg-transparent" placeholder={t('emp_name')} value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
-                    <input className="w-full p-2 border border-border rounded-md bg-transparent" placeholder={t('emp_role')} value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })} />
+                    
+                    <select className="w-full p-2 border border-border rounded-md bg-transparent text-sm" value={formData.role} onChange={e => {
+                        const prof = professions.find(p => p.name === e.target.value);
+                        setFormData({ 
+                            ...formData, 
+                            role: e.target.value,
+                            system_prompt: prof ? prof.system_prompt : formData.system_prompt 
+                        });
+                    }}>
+                        <option value="" disabled>-- Select Profession --</option>
+                        {professions.map(p => (
+                            <option key={p.id} value={p.name}>{p.name}</option>
+                        ))}
+                    </select>
+
                     <select className="w-full p-2 border border-border rounded-md bg-transparent text-sm" value={formData.api_url} onChange={e => setFormData({ ...formData, api_url: e.target.value })}>
                         <option value="" disabled>-- {t('emp_provider')} --</option>
                         <option value="OpenAI/LM Studio">OpenAI/LM Studio</option>

@@ -141,6 +141,40 @@ pub fn run() {
             ALTER TABLE ai_employees ADD COLUMN skill_path TEXT;
             ",
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 7,
+            description: "add_professions_table",
+            sql: "
+            CREATE TABLE IF NOT EXISTS professions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                system_prompt TEXT
+            );
+
+            INSERT INTO professions (name, description, system_prompt) VALUES 
+            ('Programmer', 'Software engineer and coder.', 'You are an expert programmer. When you need to execute local terminal commands (like npm, git, rustc, etc) to test your code or examine the workspace, you MUST output the command wrapped in <run_cmd>YOUR COMMAND HERE</run_cmd>. Once you output this tag, STOP and wait for the system to execute it and return the stdout/stderr to you in the next prompt.'),
+            ('Designer', 'UI/UX Designer and creative artist.', 'You are an expert UI/UX designer. Your job is to create beautiful, accessible, and modern interfaces. Focus on the user flow and visual harmony.'),
+            ('Project Manager', 'Agile project manager and scrum master.', 'You are an expert project manager. Break down tasks logically and allocate them based on the team''s skills. Monitor progress and ensure quality constraints are met.');
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 8,
+            description: "add_project_info_table",
+            sql: "
+            CREATE TABLE IF NOT EXISTS project_info (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT,
+                target_profession_id INTEGER,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (target_profession_id) REFERENCES professions(id) ON DELETE SET NULL
+            );
+            ",
+            kind: MigrationKind::Up,
         }
     ];
 

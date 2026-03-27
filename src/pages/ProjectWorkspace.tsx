@@ -5,9 +5,12 @@ import '@xyflow/react/dist/style.css';
 import { WorkflowTask, getTasks, saveTask } from '../lib/tasks';
 import { getProjectById, updateProjectChatHistory, updateProjectStage, updateProjectIsRunning } from '../lib/projects';
 import { AIEmployee, getEmployeeById, getEmployees } from '../lib/employees';
+import { getProjectInfos } from '../lib/project_info';
+import { getProfessions } from '../lib/professions';
 import { callLLM, LLMMessage } from '../lib/llm';
 import TaskModal from '../components/TaskModal';
-import { Plus, LayoutGrid, Network, Loader2, Play, Pause } from 'lucide-react';
+import ProjectInfoBoard from '../components/ProjectInfoBoard';
+import { Plus, LayoutGrid, Network, Loader2, Play, Pause, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { invoke } from '@tauri-apps/api/core';
 import { readTextFile } from '@tauri-apps/plugin-fs';
@@ -25,6 +28,7 @@ export default function ProjectWorkspace() {
     const [nodes, setNodes] = useState<Node[]>(initialNodes);
     const [edges, setEdges] = useState<Edge[]>(initialEdges);
     const [chatInput, setChatInput] = useState('');
+    const [mainTab, setMainTab] = useState<'tasks' | 'info'>('tasks');
     const [viewMode, setViewMode] = useState<'graph' | 'kanban'>('graph');
     const [manager, setManager] = useState<AIEmployee | null>(null);
     const [isChatLoading, setIsChatLoading] = useState(false);
@@ -156,6 +160,8 @@ export default function ProjectWorkspace() {
                 if (!proj) return;
                 
                 const allEmployees = await getEmployees();
+                const allInfos = await getProjectInfos(projectId);
+                const allProfs = await getProfessions();
                 
                 for (const t of currentTasks) {
                     if (t.status === 'todo' && t.assignee_type !== 'human') {
@@ -191,6 +197,16 @@ export default function ProjectWorkspace() {
                                     apiKey = emp.api_key;
                                     model = emp.model;
                                     sysPrompt = emp.system_prompt || '';
+                                    
+                                    const prof = allProfs.find(p => p.name === emp.role);
+                                    const relevantInfos = allInfos.filter(info => info.target_profession_id === null || info.target_profession_id === prof?.id);
+                                    if (relevantInfos.length > 0) {
+                                        sysPrompt += '\n\n[Project Information Base Context]\n';
+                                        relevantInfos.forEach(info => {
+                                            sysPrompt += `--- ${info.name} ---\n${info.content}\n\n`;
+                                        });
+                                    }
+
                                     if (emp.skill_path) {
                                         try {
                                             const skillData = await readTextFile(emp.skill_path);
@@ -596,38 +612,58 @@ export default function ProjectWorkspace() {
             {/* Right Pane - Canvas Map & Kanban */}
             <div className="flex-1 flex flex-col h-full bg-background relative overflow-hidden">
                 <div className="absolute top-4 left-4 z-10 bg-card border border-border rounded-md px-3 py-2 shadow-sm flex items-center gap-4">
-                    <span className="font-semibold text-sm">{t('ws_task_view')}</span>
-                    <div className="flex bg-accent/50 rounded-md p-1">
+                    <div className="flex bg-accent/50 rounded-md p-1 mr-2">
                         <button
-                            onClick={() => setViewMode('graph')}
-                            className={`p-1.5 rounded flex items-center gap-1 text-xs transition-colors ${viewMode === 'graph' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                            onClick={() => setMainTab('tasks')}
+                            className={`p-1.5 px-3 rounded flex items-center gap-2 text-xs font-semibold transition-colors ${mainTab === 'tasks' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                         >
-                            <Network size={14} /> {t('ws_graph')}
+                            <Network size={14} /> {t('ws_tab_tasks')}
                         </button>
                         <button
-                            onClick={() => setViewMode('kanban')}
-                            className={`p-1.5 rounded flex items-center gap-1 text-xs transition-colors ${viewMode === 'kanban' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                            onClick={() => setMainTab('info')}
+                            className={`p-1.5 px-3 rounded flex items-center gap-2 text-xs font-semibold transition-colors ${mainTab === 'info' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                         >
-                            <LayoutGrid size={14} /> {t('ws_kanban')}
-                        </button>
-                    </div>
-                    <div className="flex items-center gap-2 border-l border-border pl-4">
-                        <button
-                            onClick={handleToggleExecution}
-                            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded font-medium shadow-sm transition-colors ${isRunning ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}
-                        >
-                            {isRunning ? <><Pause size={14}/> {t('ws_pause_proj')}</> : <><Play size={14}/> {t('ws_start_proj')}</>}
+                            <FileText size={14} /> {t('ws_tab_info')}
                         </button>
                     </div>
-                    <button
-                        onClick={handleAddTaskClick}
-                        className="flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90 transition-opacity ml-4"
-                    >
-                        <Plus size={14} /> {t('ws_add_task')}
-                    </button>
+                    
+                    {mainTab === 'tasks' && (
+                        <>
+                            <div className="flex bg-accent/50 rounded-md p-1 border-l border-border pl-2 ml-2">
+                                <button
+                                    onClick={() => setViewMode('graph')}
+                                    className={`p-1.5 rounded flex items-center gap-1 text-xs transition-colors ${viewMode === 'graph' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                                >
+                                    <Network size={14} /> {t('ws_graph')}
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('kanban')}
+                                    className={`p-1.5 rounded flex items-center gap-1 text-xs transition-colors ${viewMode === 'kanban' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                                >
+                                    <LayoutGrid size={14} /> {t('ws_kanban')}
+                                </button>
+                            </div>
+                            <div className="flex items-center gap-2 border-l border-border pl-4">
+                                <button
+                                    onClick={handleToggleExecution}
+                                    className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded font-medium shadow-sm transition-colors ${isRunning ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}
+                                >
+                                    {isRunning ? <><Pause size={14}/> {t('ws_pause_proj')}</> : <><Play size={14}/> {t('ws_start_proj')}</>}
+                                </button>
+                            </div>
+                            <button
+                                onClick={handleAddTaskClick}
+                                className="flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded hover:opacity-90 transition-opacity ml-4"
+                            >
+                                <Plus size={14} /> {t('ws_add_task')}
+                            </button>
+                        </>
+                    )}
                 </div>
                 <div className="w-full h-full pt-16 pb-4 px-4 overflow-auto">
-                    {viewMode === 'graph' ? (
+                    {mainTab === 'info' ? (
+                        <ProjectInfoBoard projectId={projectId} />
+                    ) : viewMode === 'graph' ? (
                         <ReactFlow
                             nodes={nodes}
                             edges={edges}
