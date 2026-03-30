@@ -159,7 +159,10 @@ export default function Employees() {
                         )}
                     </div>
 
-                    <textarea className="w-full p-2 border border-border rounded-md bg-transparent min-h-[120px] text-sm" placeholder={t('emp_prompt')} value={formData.system_prompt} onChange={e => setFormData({ ...formData, system_prompt: e.target.value })} />
+                    <div className="w-full">
+                        <textarea className="w-full p-2 border border-border rounded-md bg-transparent min-h-[120px] text-sm" placeholder={formData.api_url === 'ComfyUI' ? t('emp_comfy_workflow') : t('emp_prompt')} value={formData.system_prompt} onChange={e => setFormData({ ...formData, system_prompt: e.target.value })} />
+                        {formData.api_url === 'ComfyUI' && <p className="text-xs text-muted-foreground mt-1 px-1">{t('emp_comfy_workflow_hint')}</p>}
+                    </div>
 
                     <button onClick={handleSave} className="mt-2 w-full bg-primary text-primary-foreground p-2 rounded-md font-medium hover:opacity-90 transition-opacity">
                         {editingId ? 'Update Employee' : t('emp_save')}

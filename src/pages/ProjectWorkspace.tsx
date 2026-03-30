@@ -148,6 +148,20 @@ export default function ProjectWorkspace() {
                 console.error("Auto execute failed to parse/save file:", e);
             }
         }
+
+        const b64Regex = /<file_b64\s+path="([^"]+)">([\s\S]*?)<\/file_b64>/g;
+        while ((match = b64Regex.exec(response)) !== null) {
+            const relPath = match[1];
+            const content = match[2];
+            try {
+                const parts = relPath.split(/[\\/]/);
+                const fileName = parts.pop() || 'image.png';
+                const fileType = parts.join('/') || 'images';
+                await invoke('save_asset', { projectPath: baseProjectPath, fileType, fileName, base64Data: content.trim() });
+            } catch (e) {
+                console.error("Auto execute failed to save b64 asset:", e);
+            }
+        }
     };
 
     useEffect(() => {

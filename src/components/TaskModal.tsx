@@ -9,6 +9,7 @@ import { X, Save, Paperclip, Bot, User, Plus, Trash2, Loader2, MessageSquare, Al
 import ReactMarkdown from 'react-markdown';
 import { getProjectById } from '../lib/projects';
 import { readTextFile } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from '../lib/i18n';
 
 interface TaskModalProps {
@@ -57,6 +58,13 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
     const handleSave = async (silent = false) => {
         if (formData.assignee_type === 'customAI') {
             formData.custom_api_config = JSON.stringify(customApiConfig);
+        } else if (formData.assignee_type === 'predefinedAI') {
+            const emp = employees.find(e => e.id === formData.ai_id);
+            if (emp && emp.api_url === 'ComfyUI' && customApiConfig.systemPrompt) {
+                formData.custom_api_config = JSON.stringify({ systemPrompt: customApiConfig.systemPrompt });
+            } else {
+                formData.custom_api_config = null;
+            }
         } else {
             formData.custom_api_config = null;
         }
@@ -175,6 +183,28 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
                 }
             }
 
+            // Parse and save files locally
+            if (projectPath) {
+                const fileRegex = /<file\s+path="([^"]+)">([\s\S]*?)<\/file>/g;
+                let m;
+                while ((m = fileRegex.exec(response)) !== null) {
+                    const cleanBase = projectPath.replace(/[\\/]$/, '');
+                    const cleanRel = m[1].replace(/^[\\/]/, '');
+                    const absolutePath = `${cleanBase}/${cleanRel}`;
+                    try { await invoke('save_file', { absolutePath, content: m[2] }); } catch(e){}
+                }
+
+                const b64Regex = /<file_b64\s+path="([^"]+)">([\s\S]*?)<\/file_b64>/g;
+                while ((m = b64Regex.exec(response)) !== null) {
+                    try {
+                        const parts = m[1].split(/[\\/]/);
+                        const fileName = parts.pop() || 'image.png';
+                        const fileType = parts.join('/') || 'images';
+                        await invoke('save_asset', { projectPath, fileType, fileName, base64Data: m[2].trim() });
+                    } catch(e){}
+                }
+            }
+
             // Save history
             const updatedTask = { ...formData, chat_history: JSON.stringify(history) };
             setFormData(updatedTask);
@@ -282,23 +312,37 @@ export default function TaskModal({ task, allTasks, onClose, onSaved }: TaskModa
                             </div>
 
                             {formData.assignee_type === 'predefinedAI' && (
-                                <select
-                                    className="w-full p-2 border border-border rounded-md bg-transparent text-sm"
-                                    value={formData.ai_id || ''}
-                                    onChange={e => { setFormData({ ...formData, ai_id: Number(e.target.value) }); setChatHistory([]); }}
-                                >
-                                    <option value="">{t('task_select_ai')}</option>
-                                    {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name} ({emp.role})</option>)}
-                                </select>
+                                <>
+                                    <select
+                                        className="w-full p-2 border border-border rounded-md bg-transparent text-sm"
+                                        value={formData.ai_id || ''}
+                                        onChange={e => { setFormData({ ...formData, ai_id: Number(e.target.value) }); setChatHistory([]); }}
+                                    >
+                                        <option value="">{t('task_select_ai')}</option>
+                                        {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name} ({emp.role})</option>)}
+                                    </select>
+                                    
+                                    {formData.ai_id && employees.find(e => e.id === formData.ai_id)?.api_url === 'ComfyUI' && (
+                                        <div className="mt-2">
+                                            <textarea className="w-full p-2 border border-border rounded-md bg-transparent min-h-[160px] text-sm custom-scrollbar" placeholder={t('task_override_workflow')} value={customApiConfig.systemPrompt} onChange={e => setCustomApiConfig({ ...customApiConfig, systemPrompt: e.target.value })} />
+                                        </div>
+                                    )}
+                                </>
                             )}
 
                             {formData.assignee_type === 'customAI' && (
                                 <div className="space-y-3 bg-accent/20 p-3 rounded-md border border-border mt-2">
                                     <div className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-2">{t('task_custom_sandbox')}</div>
-                                    <input className="w-full p-2 border border-border rounded-md bg-transparent text-sm" placeholder={t('task_api_url_ph')} value={customApiConfig.apiUrl} onChange={e => setCustomApiConfig({ ...customApiConfig, apiUrl: e.target.value })} />
+                                    <select className="w-full p-2 border border-border rounded-md bg-transparent text-sm" value={customApiConfig.apiUrl} onChange={e => setCustomApiConfig({ ...customApiConfig, apiUrl: e.target.value })}>
+                                        <option value="" disabled>-- Select API Provider --</option>
+                                        <option value="OpenAI/LM Studio">OpenAI/LM Studio</option>
+                                        <option value="Google">Google</option>
+                                        <option value="Groq">Groq</option>
+                                        <option value="ComfyUI">ComfyUI</option>
+                                    </select>
                                     <input className="w-full p-2 border border-border rounded-md bg-transparent text-sm" placeholder={t('task_api_key_ph')} type="password" value={customApiConfig.apiKey} onChange={e => setCustomApiConfig({ ...customApiConfig, apiKey: e.target.value })} />
                                     <input className="w-full p-2 border border-border rounded-md bg-transparent text-sm" placeholder={t('task_model_ph')} value={customApiConfig.model} onChange={e => setCustomApiConfig({ ...customApiConfig, model: e.target.value })} />
-                                    <textarea className="w-full p-2 border border-border rounded-md bg-transparent text-sm min-h-[60px]" placeholder={t('task_prompt_ph')} value={customApiConfig.systemPrompt} onChange={e => setCustomApiConfig({ ...customApiConfig, systemPrompt: e.target.value })} />
+                                    <textarea className="w-full p-2 border border-border rounded-md bg-transparent text-sm min-h-[120px]" placeholder={customApiConfig.apiUrl === 'ComfyUI' ? t('task_override_workflow') : t('task_prompt_ph')} value={customApiConfig.systemPrompt} onChange={e => setCustomApiConfig({ ...customApiConfig, systemPrompt: e.target.value })} />
                                 </div>
                             )}
                         </div>

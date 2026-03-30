@@ -35,6 +35,8 @@ export const translations = {
     emp_model: 'Model (e.g. gpt-4o)',
     emp_skill: 'Skill file',
     emp_prompt: 'System Prompt',
+    emp_comfy_workflow: 'Default Workflow JSON (API Format)',
+    emp_comfy_workflow_hint: 'Use __GLINT_PROMPT__ variable in your JSON to inject task description.',
     emp_save: 'Save Employee',
     
     ws_pm: 'Project Manager',
@@ -111,6 +113,7 @@ export const translations = {
     task_api_key_ph: 'API Key',
     task_model_ph: 'Model',
     task_prompt_ph: 'Specific Prompt Instructions...',
+    task_override_workflow: 'Override Workflow JSON (Optional)',
     task_assets_title: 'Local Assets & Context',
     task_add_path: 'Add Path',
     task_path_ph: 'C:\\Users\\Documents\\image.png',
@@ -184,6 +187,8 @@ export const translations = {
     emp_model: '模型名称',
     emp_skill: '技能文件',
     emp_prompt: '系统指令(Prompt)',
+    emp_comfy_workflow: '默认工作流 JSON (API格式)',
+    emp_comfy_workflow_hint: '在JSON中使用 __GLINT_PROMPT__ 变量来注入任务具体的描述内容。',
     emp_save: '保存员工',
     
     ws_pm: '项目经理',
@@ -260,6 +265,7 @@ export const translations = {
     task_api_key_ph: 'API密钥',
     task_model_ph: '模型名称',
     task_prompt_ph: '具体的提示词指令...',
+    task_override_workflow: '专用工作流 JSON (可选覆写)',
     task_assets_title: '本地附加文件与上下文',
     task_add_path: '添加路径',
     task_path_ph: 'C:\\Users\\Documents\\image.png',

@@ -3,6 +3,16 @@ export interface LLMMessage {
     content: string;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+}
+
 export async function getGoogleModels(apiKey: string): Promise<string[]> {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (!res.ok) {
@@ -101,6 +111,95 @@ export async function callLLM(
 
         const data = await res.json();
         return data.choices?.[0]?.message?.content || '';
+    }
+    else if (provider === 'ComfyUI') {
+        const url = (model && model.startsWith('http')) ? model : 'http://127.0.0.1:8188';
+
+        const sysMsg = messages.find(m => m.role === 'system');
+        const jsonMatch = sysMsg?.content.match(/Role Context:\s+(.*?)\s+Task Assigned:/s);
+        let workflowTemplate = jsonMatch ? jsonMatch[1].trim() : '{}';
+        
+        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
+        const safeUserMsg = lastUserMsg.replace(/"/g, '\\"').replace(/\n/g, ' ');
+        
+        workflowTemplate = workflowTemplate.replace(/__GLINT_PROMPT__/g, safeUserMsg);
+        
+        let workflowObj;
+        try {
+            workflowObj = JSON.parse(workflowTemplate);
+        } catch(e) {
+            throw new Error(`Failed to parse ComfyUI Workflow JSON. Please ensure it is a valid format exported via 'Save (API Format)' from ComfyUI.`);
+        }
+
+        const clientId = 'glint_agent_' + Math.random().toString(36).substring(7);
+        const promptBody = {
+            prompt: workflowObj,
+            client_id: clientId
+        };
+
+        const postRes = await fetch(`${url}/prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(promptBody)
+        });
+
+        if (!postRes.ok) {
+            const err = await postRes.text();
+            throw new Error(`ComfyUI API Error: ${err}`);
+        }
+
+        const data = await postRes.json();
+        const promptId = data.prompt_id;
+
+        let isDone = false;
+        let generatedFilename = '';
+        let generatedNodeType = '';
+
+        for (let i = 0; i < 40; i++) { // Max 120 seconds
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            try {
+                const histRes = await fetch(`${url}/history/${promptId}`);
+                if (histRes.ok) {
+                    const histData = await histRes.json();
+                    if (histData[promptId]) {
+                        isDone = true;
+                        const outputs = histData[promptId].outputs;
+                        for (const nodeId in outputs) {
+                            const nodeOutput = outputs[nodeId];
+                            if (nodeOutput.images && nodeOutput.images.length > 0) {
+                                generatedFilename = nodeOutput.images[0].filename;
+                                generatedNodeType = nodeOutput.images[0].type || 'output';
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            } catch(e) {}
+        }
+
+        if (!isDone) {
+            throw new Error(`ComfyUI generation timed out. Please check the local ComfyUI console.`);
+        }
+
+        if (!generatedFilename) {
+            return `[ComfyUI] ⚠️ Workflow executed successfully, but no image outputs were found. Ensure your workflow contains a 'Save Image' node.`;
+        }
+
+        try {
+            const imgRes = await fetch(`${url}/view?filename=${generatedFilename}&type=${generatedNodeType}`);
+            if (!imgRes.ok) throw new Error();
+            
+            const arrayBuffer = await imgRes.arrayBuffer();
+            const base64String = arrayBufferToBase64(arrayBuffer);
+            
+            const timestamp = new Date().getTime();
+            const fileName = `${promptId}_${timestamp}.png`;
+
+            return `[System Automaton] ComfyUI Image Generation Complete. \n\n<file_b64 path="images/${fileName}">\n${base64String}\n</file_b64>`;
+        } catch(e) {
+            throw new Error(`ComfyUI generated the image but fetching from /view failed.`);
+        }
     }
 
     throw new Error(`Unsupported API Provider: ${provider}`);
